@@ -1,3 +1,11 @@
+# Kino Score Code
+# Scoring progress of a given user in terms of 'speed toward an individual's specific goals.
+
+# importing:
+# pandas for data manipulation
+# numpy for numerical calculations/computations
+# matplotlib for visualization and plotting
+# PCA & sklearn for dimensionality reduction (scikit-learn provides an implementation of PCA - which projects the data into a lower-dimensional space, allowing for easier analysis of covariance between data points.
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -5,6 +13,8 @@ from sklearn.decomposition import PCA
 import csv
 import os
 
+# current list of metrics being tracked (primary)
+# why are these metrics denoted as primary? Is there a difference?
 metrics = [
     'bench_press', 'squat', 'deadlift', 'power_clean', '40_yard', '10_yard', 
     'vertical_jump', 'broad_jump', '1_mile', '5k_run', 'bench_press_power', 'squat_power', 
@@ -37,7 +47,7 @@ secondary_metrics = {
     'calf_asymmetry': 'calf_symmetry'
 }
 
-#which metrics should be inverted (lower is better)
+# denoting which metrics should be inverted (lower is better)
 invert_metrics = [
     '40_yard', '20_yard_shuttle', '10_yard', 'L_drill', 
     '100_meter', '60_meter', '1_mile', '5k_run', 
@@ -46,7 +56,9 @@ invert_metrics = [
     'resting_heart_rate', 'stress_levels', 'pain_levels'
 ]
 
-#goals and their associated metrics
+# goals and their associated metrics
+# determined these connections after running a PCA on these 'goals'.
+# will need to re-run a PCA on these goals and which metrics matter when we get real user data.
 goals = {
     'Lose excess body fat': ['body_fat_percentage', 'waist_hip_ratio'],
     'Build muscle mass': ['skeletal_muscle_mass', 'muscle_mass'],
@@ -75,6 +87,8 @@ goals = {
     'Improve hydration': ['hydration']
 }
 
+# correlating metrics to the length of time that could be considered important when evaluating progress.
+# must be updated every time we add new metrics that we are looking to track.
 historical_lengths = {
     'sleep_quality': 'week',
     'resting_heart_rate': 'week',
@@ -116,17 +130,33 @@ historical_lengths = {
     'half_marathon': 'year'
 }
 
+# performing a PCA on the data to determine the weight of each metric based on the variance that each metric explains.
+# taking in data as a Pandas 'DataFrame' which contains the data we are running the PCA on.
 def perform_pca(df):
+    # standardizing the data - pre-processing ensures each feature contributes equally to the analysis.
     standardized_df = (df - df.mean()) / df.std()
+    
+    # initializing and fitting the PCA - calling PCA() from sklearn, dropping invalid data (NaN).
+    # pca.fit(...) fits the model to the standardized data without this missing data.
     pca = PCA()
     pca.fit(standardized_df.dropna())
+
+    # retrieving the proprotion of the dataset's total variance explained by each principal component.
+    # will be returned with [x, y, z] where component 1 explains 'x'% of the variance. 
     explained_variance = pca.explained_variance_ratio_
+
+    # creating a dictionary that takes in key 'metric', and associates it with value 'explained variance'.
     metric_weights = {metric: explained_variance[i] for i, metric in enumerate(df.columns)}
     return metric_weights
 
+# computing the average of a specific metric given a time period.
 def get_historical_average(df, metric, period):
+    # checking if the metric is in the pandas dataframe and returns a number.
     if metric not in df.columns or df[metric].empty:
         return np.nan
+
+    # if the period is 1 day, we return the most recent day (average of 1 day is 1 day).
+    # do the same with remaining time periods - week, month, and year.
     if period == 'day':
         return df[metric].iloc[-1]
     elif period == 'week':
@@ -141,21 +171,30 @@ def get_historical_average(df, metric, period):
         if len(df[metric]) < 365:
             return df[metric].mean()  
         return df[metric].rolling(window=365).mean().iloc[-1]
+
+    # if no period is specified then we take the overall mean.
     else:
         return df[metric].mean()
 
+# determining if the trend is improving or declining - current metric value compared to the average
 def calculate_trend_value(current_value, historical_average):
     return current_value / historical_average if historical_average else np.nan
 
+# calculating the weighted average for a metric based on how recent the data is.
 def calculate_weighted_historical_average(df, metric, weights):
     if metric not in df.columns or df[metric].empty:
         return np.nan
 
+    # initializing weighted average / total weight to 0
     weighted_average = 0
     total_weight = 0
 
+    # looking through the 'weights' dictionary to find 'days_ago'
     for days_ago, weight in weights.items():
+    
+        # checking if there are enough rows in the data frame to look back x 'days_ago'
         if len(df[metric]) > days_ago:
+            # multiplying the weight of that 'days_ago' by the value of that metric
             weighted_average += df[metric].iloc[-days_ago] * weight
             total_weight += weight
 
@@ -164,6 +203,7 @@ def calculate_weighted_historical_average(df, metric, weights):
 
     return weighted_average / total_weight
 
+# normalizing the value on a scale of 0 to 1, and inverting if need be (speed, endurance)
 def normalize_and_invert(value, min_value, max_value, invert=False, trend=None, weight_distribution=None, improvement_penalty=False):
     if pd.isna(value) or pd.isna(min_value) or pd.isna(max_value):
         return np.nan
@@ -171,27 +211,34 @@ def normalize_and_invert(value, min_value, max_value, invert=False, trend=None, 
     
     normalized_value = (value - min_value) / (max_value - min_value)
     
-    # Invert normalization if needed
+    # Invert normalization if needed - used for speed metrics.
     if invert:
         normalized_value = 1 - normalized_value
     
-    # Combine with trend if provided
+    # Combine with trend if provided in the dictionary (basically saying that
+    # we've set up a dictionary that includes metrics that should have their trend
+    # taken into account). 
     if trend:
+        # weight distribution for trend / objective both set to 50% if the metric is not found in our dictionary
         trend_weight = weight_distribution['trend'] if weight_distribution else 0.5
         objective_weight = weight_distribution['objective'] if weight_distribution else 0.5
+
+        # how does the current trend compare to that of the historical score.
+        # QUESTION - what is the purpose of the historical trend, how are getting said historical trend, how does it change from metric to metric?
         trend_normalized = trend.get('current', 0) / trend.get('historical', 1)
         normalized_value = (objective_weight * normalized_value) + (trend_weight * trend_normalized)
     
-    
+    # user scores become pensalized given a lack of improvement 'currently'
     if improvement_penalty and trend:
         if value == trend['historical']:
             normalized_value *= 0.9  # Apply a 10% penalty for lack of improvement
     
-    # Ensure the combined normalized value is within the range of 0 to 1
+    # Ensure the combined normalized value is within the range of 0 to 1 via a process called 'clipping'
     normalized_value = np.clip(normalized_value, 0, 1)
     
     return normalized_value
 
+# the proper distribution between objective and trend for each specific metric
 metrics_weight_distribution = {
     'bench_press': {'objective': 0, 'trend': 1},
     'squat': {'objective': 0, 'trend': 1},
@@ -235,19 +282,28 @@ metrics_weight_distribution = {
     'hydration': {'objective': 0.5, 'trend': 0.5}
 }
 
+# appending data (in the form of a dictionary) to our CSV
+# QUESTION - what is the purpose of this?
 def append_dict_to_csv(dictionary, filename):
     file_exists = os.path.isfile(filename)
     
     if file_exists:
         existing_df = pd.read_csv(filename)
+
+        # create a new data frame 'new_row' from the dictionary by wrapping it in a list
+        # thus, the dictionary is treated as a single row of data.
         new_row = pd.DataFrame([dictionary])
+
         if not new_row.isin(existing_df).all(axis=None).all():
-            # Find a metric to increment
+            # Find a metric to increment, while making sure no metric has two of the same data points (yesterday: 7,000 steps, today: 7,000.1 steps -- Why do we do this?)
             metric_to_increment = next(iter(dictionary.keys()))  # or choose a specific metric
             dictionary[metric_to_increment] += 0.1
             new_row = pd.DataFrame([dictionary])
+
+        # appending a new row to the existing pandas Data Frame
         existing_df = pd.concat([existing_df, new_row], ignore_index=True)
         existing_df.to_csv(filename, index=False)
+        
     else:
         with open(filename, 'a', newline='') as csvfile:
             csvwriter = csv.writer(csvfile)
@@ -255,13 +311,18 @@ def append_dict_to_csv(dictionary, filename):
             csvwriter.writerow(header)
             csvwriter.writerow(dictionary.values())
 
+# removing duplicates from the csv, keeping on the latest of duplicates
+# QUESTION - what duplicates are we deleting?
 def remove_duplicates_from_csv(filename):
     if os.path.isfile(filename):
         df = pd.read_csv(filename)
         df.drop_duplicates(keep='last', inplace=True)
         df.to_csv(filename, index=False)
 
+# calculating the consistency score for our users
+# user_data contains current activity data for the user, while historical_df ocntains the data for the user used to find historical averages.
 def calculate_consistency_score(user_data, historical_df):
+    # assigning importance of activity over the last seven days (1 day ago's activity = 70% of the activity consistency score)
     weekly_weights = {
         1: 0.70,
         2: 0.20,
@@ -272,46 +333,86 @@ def calculate_consistency_score(user_data, historical_df):
         7: 0.10
     }
 
+    # initializing the consistency score and metric count (which will be used to find the 'average' consistency score).
     consistency_score = 0
     metric_count = 0
 
     
     active_minutes = user_data.get('active_minutes')
+    # ensuring active_minutes is measured for a particular user
     if active_minutes is not None:
+        # use our function 'calculate_weighted_historical_average' to find the historical average of a user's active minutes
+        # QUESTION - are we calculating the historical average using the 7 days weights listed above? Or last 7 weeks? Or...?
         historical_avg_active_minutes = calculate_weighted_historical_average(historical_df, 'active_minutes', weekly_weights)
+
+        # compute a trend value looking at current active minutes as compared to the user's historical average (last 7 days?)
         trend_value = calculate_trend_value(active_minutes, historical_avg_active_minutes)
+
+        # computing an active minutes objective score (0 active minutes => 10 Kino Score component, and so on...)
         active_minutes_objective_score = np.interp(active_minutes, [0, 40, 60, 90, 120, 150], [10, 30, 50, 70, 90, 100])
+
+        # computing the trend score for the active minutes (20% less than baseline => Kino Score component of 20, and so on...)
         active_minutes_trend_score = np.interp(trend_value, [0.8, 0.9, 1.0, 1.1, 1.2], [20, 60, 80, 90, 100])
+
+        # active minutes score component of the Kino Score = 40% objective score + 60% trend score
         active_minutes_score = 0.4 * active_minutes_objective_score + 0.6 * active_minutes_trend_score
+
+        # consistency score component of the Kino Score is 40% of the active minutes score
         consistency_score += 0.4 * active_minutes_score
+
+        # metric count is incremented
         metric_count += 1
 
-    
+    # QUESTION - are we still able to take into account active calories .vs. general calories
     calories_burned = user_data.get('calories_burned')
+    # same situation for calories as active minutes - ensuring wearable users are staying consistent with objective data
     if calories_burned is not None:
+        # computing the average calorie historical average
         historical_avg_calories_burned = calculate_weighted_historical_average(historical_df, 'calories_burned', weekly_weights)
+
+        # using the historical average to calculate a trend value for calories burned
         trend_value = calculate_trend_value(calories_burned, historical_avg_calories_burned)
         calories_burned_objective_score = np.interp(calories_burned, [0, 1000, 1250, 1500, 2000, 2500], [10, 30, 50, 70, 90, 100])
         calories_burned_trend_score = np.interp(trend_value, [0.8, 0.9, 1.0, 1.1, 1.2], [20, 60, 80, 90, 100])
+
+        # calories burned score is made up of 50% the objective number of calories burnt and 50% the trend of a person's calories being burnt
         calories_burned_score = 0.5 * calories_burned_objective_score + 0.5 * calories_burned_trend_score
+
+        # calories burned score is 30% of the consistency score
         consistency_score += 0.3 * calories_burned_score
+        
         metric_count += 1
 
-    
     steps = user_data.get('steps')
     if steps is not None:
         historical_avg_steps = calculate_weighted_historical_average(historical_df, 'steps', weekly_weights)
         trend_value = calculate_trend_value(steps, historical_avg_steps)
+
+        # correlating objective number of steps to a Kino Score component
         steps_objective_score = np.interp(steps, [0, 2000, 4000, 6000, 8000, 10000], [10, 30, 50, 70, 90, 100])
+
+        # correlating the relative number of steps to the historical average to determine a trend value of the Kino Score
         steps_trend_score = np.interp(trend_value, [0.8, 0.9, 1.0, 1.1, 1.2], [20, 60, 80, 90, 100])
+
+        # steps score is made up of 50% the numerical (objective) value and 50% of the trend of a person's steps
         steps_score = 0.5 * steps_objective_score + 0.5 * steps_trend_score
+
+        # 30% of the consistency score component of the Kino Score is made up of the steps score (daily activity)
         consistency_score += 0.3 * steps_score
+        
         metric_count += 1
 
+    # we now have the objective & trend based score for the Kino Score - Consistency Component
+    # QUESTION - are we eventually adding in subjective (did you make all your workouts last week?)
     return consistency_score
 
+# calculating the average progress component of the Kino Score
+# using the pandas Data Frame to compute the historical average of a person's average progress for the 'trend' component of the score.
 def calculate_average_progress_score(user_data, historical_df):
-    
+
+    # building out the 5 different buckets
+    # QUESTION - balance is missing, but that should be fine.
+    # QUESTION - we'll need to hop in here and manually input other common metrics that people care about to make sure the Kino Score reflects all of a groups' lifts.
     strength_metrics = ['bench_press', 'squat', 'deadlift', 'power_clean']
     speed_metrics = ['40_yard', '100_meter']
     endurance_metrics = ['1_mile', '5k_run', 'marathon', 'half_marathon']
@@ -325,7 +426,8 @@ def calculate_average_progress_score(user_data, historical_df):
     power_progress = calculate_power_progress(user_data, historical_df, power_metrics)
     reps_progress = calculate_reps_progress(user_data, historical_df, reps_metrics)
     
-    
+    # the average progress score is made up 20% strength, speed, and power metrics, 15% endurance metrics, and 25% reps progress
+    # QUESTION - should we change this weighting?
     average_progress_score = (strength_progress * 0.2 +
                               speed_progress * 0.2 +
                               endurance_progress * 0.15 +
@@ -334,17 +436,28 @@ def calculate_average_progress_score(user_data, historical_df):
     
     return average_progress_score
 
+# QUESTION - what is the difference between the strength progress and the strength score?
+# determining the strength progress component of the average progress score
 def calculate_strength_progress(user_data, historical_df, metrics):
+    # initializing progress and metric count
     progress_score = 0
     metric_count = 0
-    
+
+    # looking at each metric in the strength bucket    
     for metric in metrics:
         if metric in user_data:
             period = historical_lengths.get(metric, 'year')
+
+            # getting historical data and building an average
             historical_average = get_historical_average(historical_df, metric, period)
+
+            # trend value is determined from current user data and the historical average.
             trend_value = calculate_trend_value(user_data[metric], historical_average)
+
+            # score is determined only on user's trend and how the current metric relates to it
             score = calculate_strength_score(user_data[metric], trend_value)
             progress_score += score
+
             metric_count += 1
     
     if metric_count > 0:
@@ -352,8 +465,15 @@ def calculate_strength_progress(user_data, historical_df, metrics):
     
     return progress_score
 
+# calculating strength score for the average progress bucket using the progress_score determined above
 def calculate_strength_score(current, trend):
+
     # Calculate strength score based on the trend
+    # QUESTION - what does 'trend' >= 1.10 actually mean? How would the 'trend' be +10%? Wouldn't trend need to be: current/trend?
+    # QUESTION - or is this computed from the 'calculate_trend_value' performed above?
+    # QUESTION - what does "if the trend is 10% or more above the historical average" mean? I would think that we would want to see if the latest datapoint > 10% over historical average then we return it?
+    # QUESTION - okay, I think I get it -> trend = current metric / average, thus trend tells us the difference between the current number and the users historical numbers.
+    
     if trend >= 1.10:
         return 100
     elif 1.07 <= trend < 1.10:
@@ -373,16 +493,25 @@ def calculate_strength_score(current, trend):
     else:
         return 0
 
+# calculating speed progress score
 def calculate_speed_progress(user_data, historical_df, metrics):
     progress_score = 0
     metric_count = 0
-    
+
+    # loop through all of the speed metrics
     for metric in metrics:
         if metric in user_data:
             period = historical_lengths.get(metric, 'year')
+            # compute the historical average of a users speed metrics
             historical_average = get_historical_average(historical_df, metric, period)
+            
+            # determine the trend value using current data and historical average
             trend_value = calculate_trend_value(user_data[metric], historical_average)
+
+            # speed score (progress) is determined using the calculate_speed_score function
+            # this speed score is determined by the current score as it compares to the trend.
             score = calculate_speed_score(user_data[metric], trend_value)
+            
             progress_score += score
             metric_count += 1
     
@@ -393,6 +522,8 @@ def calculate_speed_progress(user_data, historical_df, metrics):
 
 def calculate_speed_score(current, trend):
     # Calculate speed score based on the trend
+    # speed growth compared to trend shows a much smaller change resulting in higher Kino Scores
+    # reflecting the difficulty in improving ones speed
     if trend >= 1.03:
         return 100
     elif 1.02 <= trend < 1.03:
@@ -411,12 +542,17 @@ def calculate_speed_score(current, trend):
 def calculate_endurance_progress(user_data, historical_df, metrics):
     progress_score = 0
     metric_count = 0
-    
+
+    # looping through endurance metrics to build endurance progress score
     for metric in metrics:
         if metric in user_data:
             period = historical_lengths.get(metric, 'year')
             historical_average = get_historical_average(historical_df, metric, period)
+
+            # computing the trend value using current data and comparing it to the historical data points
             trend_value = calculate_trend_value(user_data[metric], historical_average)
+
+            # the score is then determined based on this trend_value and then added to the progress_score variable
             score = calculate_endurance_score(user_data[metric], trend_value)
             progress_score += score
             metric_count += 1
@@ -426,6 +562,7 @@ def calculate_endurance_progress(user_data, historical_df, metrics):
     
     return progress_score
 
+# calculating endurance_score results in different score than progress_score
 def calculate_endurance_score(current, trend):
     # Calculate endurance score based on the trend
     if trend >= 1.10:
@@ -448,13 +585,19 @@ def calculate_endurance_score(current, trend):
 def calculate_power_progress(user_data, historical_df, metrics):
     progress_score = 0
     metric_count = 0
-    
+
+    # looping through metrics in the power bucket
     for metric in metrics:
         if metric in user_data:
             period = historical_lengths.get(metric, 'year')
             historical_average = get_historical_average(historical_df, metric, period)
+
+            # using the historical average to determine trend_value
             trend_value = calculate_trend_value(user_data[metric], historical_average)
+
+            # endurance score (a component of the progress score) is determined using the trend
             score = calculate_power_score(user_data[metric], trend_value)
+            
             progress_score += score
             metric_count += 1
     
@@ -487,14 +630,20 @@ def calculate_power_score(current, trend):
 def calculate_reps_progress(user_data, historical_df, metrics):
     progress_score = 0
     metric_count = 0
-    
+
+    # looping over reps progress in order to add it to our 'progress score'
     for metric in metrics:
         if metric in user_data:
             period = historical_lengths.get(metric, 'year')
             historical_average = get_historical_average(historical_df, metric, period)
+
+            # finding historical average to compute the trend_value
             trend_value = calculate_trend_value(user_data[metric], historical_average)
+
+            # trend_value is then used to determine the score, which is used to develop the 'progress score'
             score = calculate_reps_score(user_data[metric], trend_value)
             progress_score += score
+            
             metric_count += 1
     
     if metric_count > 0:
@@ -521,6 +670,7 @@ def calculate_reps_score(current, trend):
     else:
         return 20
 
+# moving to the Recovery bucket by computing the heart_score
 def calculate_heart_score(user_data, historical_df):
     historical_weights = {
         1: 0.35,
@@ -534,31 +684,57 @@ def calculate_heart_score(user_data, historical_df):
         30: 0.10
     }
 
+    # initializing a user's heart score
     heart_score = 0
 
-    
+    # HRV score is a component of the heart score
     hrv = user_data.get('heart_rate_variability')
+    
+    # if user has HRV data available...
     if hrv is not None:
+        # build a user's historical average using pandas Data Frames, looking for heart_rate_variability and the respective length of time + weights
         historical_avg_hrv = calculate_weighted_historical_average(historical_df, 'heart_rate_variability', historical_weights)
+
+        # build a user's trend value using their most recent HRV scores and their historical average HRV scores.
         trend_value = calculate_trend_value(hrv, historical_avg_hrv)
+
+        # also build an objective score that relies solely on the numerical value
         hrv_objective_score = np.interp(hrv, [20, 30, 40, 50, 60, 70], [10, 20, 40, 60, 80, 100])
         hrv_trend_score = np.interp(trend_value, [0.8, 0.9, 1.0, 1.05, 1.1], [10, 60, 80, 90, 100])
+
+        # hrv_score is made up of 40% a user's objective score & 60% an objective user's hrv_trend score
         hrv_score = 0.4 * hrv_objective_score + 0.6 * hrv_trend_score
+
+        # heart_score is made up of 70% a user's hrv_score
         heart_score += 0.7 * hrv_score
 
-    
+    # the second component of the heart score is the rhr (resting heart rate)
     rhr = user_data.get('resting_heart_rate')
+
+    # check to see if rhr is an available metric for a given user
     if rhr is not None:
+        # if so, the historical average is calculated using pandas Data Frame
         historical_avg_rhr = calculate_weighted_historical_average(historical_df, 'resting_heart_rate', historical_weights)
+
+        # with this historical_avg_rhr, we can determine the trend score (rhr / historical_avg_rhr)
         trend_value = calculate_trend_value(rhr, historical_avg_rhr)
+
+        # building the rhr_score through two components, rhr_objective_score and the rhr_score
         rhr_objective_score = np.interp(rhr, [50, 60, 70, 80, 90, 100], [100, 90, 80, 60, 40, 10])
         rhr_trend_score = np.interp(trend_value, [1.2, 1.1, 1.0, 0.95, 0.90], [20, 40, 80, 90, 100])
+
+        # rhr_score is made up 40% the objective, numerical value (rhr_objective score) and 60% the user's trend (rhr_trend_score)
         rhr_score = 0.4 * rhr_objective_score + 0.6 * rhr_trend_score
+
+        # 30% of the heart_score is determined by the rhr_score
         heart_score += 0.3 * rhr_score
 
     return heart_score
 
+# calculating a user's recovery score using sleep related data
 def calculate_recovery_score(user_data, historical_df):
+    # looking at the past 14 days of sleep
+    # QUESTION - we'll want to average the days of 8-14's sleep and make that count for 10% of the score, is that what we're doing?
     sleep_weights = {
         1: 0.40,
         2: 0.30,
@@ -570,17 +746,30 @@ def calculate_recovery_score(user_data, historical_df):
         14: 0.10
     }
 
+    # initializing recovery_score & metric_count
     recovery_score = 0
     metric_count = 0
 
-    
+    # using subjective metrics such as a user's determined 'sleep quality' to determine a users recovery
+    # QUESTION - are we looking at hours of sleep, wake/bedtime consistency, or any other numerical values?
     sleep_quality = user_data.get('sleep_quality')
+
+    # if this sleep quality is available (the user took a sleep questionnaire)
     if sleep_quality is not None:
+        # look at the historical average of responses from these questionnaires
         historical_avg_sleep_quality = calculate_weighted_historical_average(historical_df, 'sleep_quality', sleep_weights)
+
+        # build a recency score that evaluates the sleep quality trend using the historical_avg_sleep_quality
         trend_value = calculate_trend_value(sleep_quality, historical_avg_sleep_quality)
+
+        # build a second component to the sleep_quality_score: sleep_quality_objective_score
         sleep_quality_objective_score = np.interp(sleep_quality, [1, 2, 3, 4, 5], [10, 30, 50, 70, 100])
         sleep_quality_trend_score = np.interp(trend_value, [0.8, 0.9, 1.0, 1.1, 1.2], [20, 60, 80, 90, 100])
+
+        # sleep quality score is then determined 40% off of the objective, numerical value, and 60% off of the trend value
         sleep_quality_score = 0.4 * sleep_quality_objective_score + 0.6 * sleep_quality_trend_score
+
+        # 60% of the recovery score is based off of the sleep_quality_score
         recovery_score += 0.6 * sleep_quality_score
         metric_count += 1
 
@@ -591,7 +780,9 @@ def calculate_recovery_score(user_data, historical_df):
 
     return recovery_score
 
+# building a subjective_score that can be factored into the Kino Score
 def calculate_subjective_scores(user_data):
+    # QUESTION - why is the recovery score totalling 90?
     recovery_score = (
         0.45 * user_data['refreshed_feeling'] +
         0.15 * user_data['workout_difficulty'] +
@@ -599,6 +790,7 @@ def calculate_subjective_scores(user_data):
     )
 
     wellness_score = (
+        # QUESTION - and why is the wellness score totalling 110?
         0.40 * user_data['energy_level'] +
         0.40 * user_data['stress_management'] +
         0.20 * user_data['mood'] +
@@ -618,25 +810,28 @@ def calculate_subjective_scores(user_data):
 
     return subjective_scores
 
+# calculating a general_score, that will take into account the subjectives and objectives
 def calculate_general_score(objective_score, subjective_scores):
+    # initializing subjective_score and weight_sum
     subjective_score = 0
     weight_sum = 0
 
     if subjective_scores['recovery_score'] is not None:
+        # if a user has answered recovery score questionnaires, 40% of the subjective_score will be based off of the recovery score.
         subjective_score += 0.40 * subjective_scores['recovery_score']
         weight_sum += 0.40
     
-    
+    # if a user has answered wellness score questionnaires, 20% of the subjective_score will be based off of the wellness score.
     if subjective_scores['wellness_score'] is not None:
         subjective_score += 0.20 * subjective_scores['wellness_score']
         weight_sum += 0.20
     
-    
+    # if a user has answered avg. progress questionnaires, 20% of the subjective_score will be based off of the avg. progress score.
     if subjective_scores['avg_progress_score'] is not None:
         subjective_score += 0.20 * subjective_scores['avg_progress_score']
         weight_sum += 0.20
     
-    
+    # if a user has answered consistency questionnaires, 20% of the subjective_score will be based off of the consistency score.
     if subjective_scores['consistency_score'] is not None:
         subjective_score += 0.20 * subjective_scores['consistency_score']
         weight_sum += 0.20
@@ -645,17 +840,25 @@ def calculate_general_score(objective_score, subjective_scores):
     if weight_sum > 0:
         subjective_score /= weight_sum
 
+    # general score is thus a sum between the objective and subjective scores
     general_score = 0.60 * objective_score + 0.40 * subjective_score
+    
     return general_score
 
 
 def calculate_objective_score(user_data, historical_df):
+
+    # initializing objective_score and metric_count
     objective_score = 0
     metric_count = 0
 
+    # looking through all of the metrics in user_data
     for metric in metrics:
         if metric in user_data:
+            # if the historical length exists - use it, if not - use a years length
             period = historical_lengths.get(metric, 'year')
+
+            # using the period listed above, find the historical_average using the period determined above
             historical_average = get_historical_average(historical_df, metric, period)
 
             # Skip the metric if historical average is NaN or zero
@@ -668,15 +871,23 @@ def calculate_objective_score(user_data, historical_df):
             if pd.isna(min_value) or pd.isna(max_value) or min_value == max_value:
                 continue
 
+            # Calculate the trend value of the metric, using the historical_average determined above
             trend_value = calculate_trend_value(user_data[metric], historical_average)
+            
+            # get the weight distribution, or if none exists, use a 50/50 split
             weight_distribution = metrics_weight_distribution.get(metric, {'objective': 0.5, 'trend': 0.5})
 
+            # normalize the score so we can run an analysis on it
             normalized_score = normalize_and_invert(
                 user_data[metric],
                 min_value,
                 max_value,
                 invert=metric in invert_metrics,
+                
+                # creating a dictionary whose values get passed to the trend function
                 trend={'current': user_data[metric], 'historical': historical_average},
+
+                # determining how much weight should be given to the objective and trend scores
                 weight_distribution=weight_distribution
             )
 
@@ -692,19 +903,30 @@ def calculate_objective_score(user_data, historical_df):
 
     return objective_score
 
+# now that weve returned the objective results score, we determine the score with regard to a users goals
 def calculate_goal_centered_scores(user_data, selected_goals, primary_df, secondary_df, historical_df):
+
+    # initializing a dictionary that holds (goal, goal score) given a users history which we access through a pandas Data Frame
     goal_scores = {}
     user_history = historical_df
-    
+
+    # iterate over each of a users goals
     for goal in selected_goals:
+
         if goal in goals:
             goal_metrics = goals[goal]
+
+            # for each new goal, initiate the goal_score to 0
             goal_score = 0
             metric_count = 0
-            
+
+            # looping through each metric within the users goal_metric list
+            # QUESTION - what is the purpose of having primary and secondary goals?
             for metric in goal_metrics:
                 if metric and metric in user_data:
                     if metric in primary_df.columns:
+
+                        # performing a very similar score calculation but for only goal_metrics
                         min_value = primary_df[metric].min()
                         max_value = primary_df[metric].max()
                         period = historical_lengths.get(metric, 'year')
@@ -724,6 +946,10 @@ def calculate_goal_centered_scores(user_data, selected_goals, primary_df, second
                         normalized_score = normalize_and_invert(
                             user_data[metric], min_value, max_value, invert=metric in invert_metrics, trend={'current': user_data[metric], 'historical': historical_average}, weight_distribution=weight_distribution, improvement_penalty=True
                         )
+
+                    # if the metric is not found in either primary_df or secondary_df, then we dont compute a score
+                    # QUESTION - this is where we want to incorporate some sort of GPT to perform this task for us
+                    # QUESTION - what would be cool is if we could have the GPT assing a weight to the importance with regard to a goal (x%)
                     else:
                         normalized_score = np.nan
 
@@ -738,10 +964,11 @@ def calculate_goal_centered_scores(user_data, selected_goals, primary_df, second
 
     return goal_scores
 
+# to run Kino Score we need a primary file which holds primary metrics, a file containing secondary metrics and a file containing a users historical file
+# QUESTION - in the future, we should edit this so that we only need 1 file to read?
 def kino_score_v2(user_data, selected_goals, metrics, primary_file='fabricated_v1_data.csv', secondary_file='secondary_metrics.csv', historical_file='historical_data.csv'):
     primary_df = pd.read_csv(primary_file)
     secondary_df = pd.read_csv(secondary_file)
-    
     
     append_dict_to_csv(user_data, historical_file)
     
@@ -749,17 +976,22 @@ def kino_score_v2(user_data, selected_goals, metrics, primary_file='fabricated_v
     
     primary_weights = perform_pca(primary_df)
     secondary_weights = perform_pca(secondary_df)
-    
+
+    # clean the user data, non-applicable data is converted to NaN
     user_data = {k: (float(v) if v not in ('n/a', None) else np.nan) for k, v in user_data.items()}
-    
+
+    # if a primary metric doesnt exist, but a secondary resembles the primary, we replace the missing data with available secondary data
+    # QUESTION - how do we determine correlation between the primary and secondary?
     for primary, secondary in secondary_metrics.items():
         if primary in user_data and pd.isna(user_data[primary]) and secondary in user_data:
             user_data[primary] = user_data[secondary]
 
     goal_weights = {goal: 1/len(selected_goals) for goal in selected_goals}
-    
+
+    # initializing the dictionary so that we assign each metric a weight corresponding to the goals
     metric_goal_weights = {}
     for goal in selected_goals:
+        QUESTION - we are currently assigning each goal even weight - correct?
         if goal in goals:
             goal_metrics = goals[goal]
             weight_per_metric = goal_weights[goal] / len(goal_metrics) if goal_metrics else 0
@@ -796,16 +1028,24 @@ def kino_score_v2(user_data, selected_goals, metrics, primary_file='fabricated_v
             normalized_user_data[metric] = normalize_and_invert(
                 primary_user_data[metric], min_value, max_value, invert=metric in invert_metrics, trend={'current': primary_user_data[metric], 'historical': historical_average}, weight_distribution=weight_distribution, improvement_penalty=True
             )
-    
+
+    # scaling user data between 1-100, clipping it at 100 (cant be over)
     scaled_user_data = {metric: normalized_user_data[metric] * 100 for metric in normalized_user_data}
     scaled_user_data = {metric: np.clip(value, 1, 100) for metric, value in scaled_user_data.items()}
     
     total_goal_weight = sum(metric_goal_weights.values())
+    
+    # building a dictionary with (metric, weight), if the weight doesnt exist we assign it a 0
+    # QUESTION - why assign it a weight of 0?
     goal_adjusted_weights = {metric: metric_goal_weights.get(metric, 0) for metric in metrics}
-    
+
+    # adding all pca_weights so we can normalize weights for the goal_centered_score
     total_pca_weight = sum(primary_weights.values()) + sum(secondary_weights.values())
+
+    # adjusting weights using the total_pca_weight above
     pca_adjusted_weights = {metric: (primary_weights.get(metric, 0) + secondary_weights.get(metric, 0)) / total_pca_weight for metric in metrics}
-    
+
+    # adjusting the Kino Score so that it is both a general PCA of the metrics + a goal adjusted weighting
     final_weights = {metric: pca_adjusted_weights[metric] + goal_adjusted_weights[metric] for metric in metrics}
     
     weighted_sum = 0
@@ -824,7 +1064,7 @@ def kino_score_v2(user_data, selected_goals, metrics, primary_file='fabricated_v
     # Ensure KinoScore is within 1-100 range
     weighted_kino_score = max(1, min(weighted_kino_score, 100))
 
-    
+    # actually calculating the goal_centered_score
     goal_centered_scores = calculate_goal_centered_scores(user_data, selected_goals, primary_df, secondary_df, historical_df)
     goal_centered_score = np.nanmean(list(goal_centered_scores.values()))
 
